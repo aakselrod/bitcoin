@@ -79,6 +79,9 @@ const char* GetTxnOutputType(txnouttype t)
     case TX_PUBKEYHASH: return "pubkeyhash";
     case TX_SCRIPTHASH: return "scripthash";
     case TX_MULTISIG: return "multisig";
+    case TX_PUBKEYWITHHASH: return "pubkeywithhash";
+    case TX_PUBKEYHASHWITHHASH: return "pubkeyhashwithhash";
+    case TX_MULTISIGWITHHASH: return "multisigwithhash";
     }
     return NULL;
 }
@@ -1138,6 +1141,15 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
 
         // Sender provides N pubkeys, receivers provides M signatures
         mTemplates.insert(make_pair(TX_MULTISIG, CScript() << OP_SMALLINTEGER << OP_PUBKEYS << OP_SMALLINTEGER << OP_CHECKMULTISIG));
+
+        // Standard tx, sender provides pubkey, receiver adds signature, with hash pre-image check for certain types of contracts
+        mTemplates.insert(make_pair(TX_PUBKEYWITHHASH, CScript() << OP_HASH160 << OP_PUBKEYHASH << OP_EQUALVERIFY << OP_PUBKEY << OP_CHECKSIG));
+
+        // Bitcoin address tx, sender provides hash of pubkey, receiver provides signature and pubkey, with hash pre-image check for certain types of contracts
+        mTemplates.insert(make_pair(TX_PUBKEYHASHWITHHASH, CScript() << OP_HASH160 << OP_PUBKEYHASH << OP_EQUALVERIFY << OP_DUP << OP_HASH160 << OP_PUBKEYHASH << OP_EQUALVERIFY << OP_CHECKSIG));
+
+        // Sender provides N pubkeys, receivers provides M signatures, with hash pre-image check for certain types of contracts
+        mTemplates.insert(make_pair(TX_MULTISIGWITHHASH, CScript() << OP_HASH160 << OP_PUBKEYHASH << OP_EQUALVERIFY << OP_SMALLINTEGER << OP_PUBKEYS << OP_SMALLINTEGER << OP_CHECKMULTISIG));
     }
 
     // Shortcut for pay-to-script-hash, which are more constrained than the other types:
@@ -1175,6 +1187,14 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
                     unsigned char m = vSolutionsRet.front()[0];
                     unsigned char n = vSolutionsRet.back()[0];
                     if (m < 1 || n < 1 || m > n || vSolutionsRet.size()-2 != n)
+                        return false;
+                }
+                if (typeRet == TX_MULTISIGWITHHASH)
+                {
+                    // Additional checks for TX_MULTISIGWITHHASH:
+                    unsigned char m = vSolutionsRet.front()[1];
+                    unsigned char n = vSolutionsRet.back()[0];
+                    if (m < 1 || n < 1 || m > n || vSolutionsRet.size()-3 != n)
                         return false;
                 }
                 return true;
@@ -1284,6 +1304,9 @@ bool Solver(const CKeyStore& keystore, const CScript& scriptPubKey, uint256 hash
     switch (whichTypeRet)
     {
     case TX_NONSTANDARD:
+    case TX_PUBKEYWITHHASH: // no support for hash pre-image storage in wallet yet, so we won't be able to sign it
+    case TX_PUBKEYHASHWITHHASH:
+    case TX_MULTISIGWITHHASH:
         return false;
     case TX_PUBKEY:
         keyID = CPubKey(vSolutions[0]).GetID();
@@ -1317,12 +1340,20 @@ int ScriptSigArgsExpected(txnouttype t, const std::vector<std::vector<unsigned c
         return -1;
     case TX_PUBKEY:
         return 1;
+    case TX_PUBKEYWITHHASH:
+        return 2;
     case TX_PUBKEYHASH:
         return 2;
+    case TX_PUBKEYHASHWITHHASH:
+        return 3;
     case TX_MULTISIG:
         if (vSolutions.size() < 1 || vSolutions[0].size() < 1)
             return -1;
         return vSolutions[0][0] + 1;
+    case TX_MULTISIGWITHHASH:
+        if (vSolutions.size() < 2 || vSolutions[1].size() < 1)
+            return -1;
+        return vSolutions[1][0] + 2;
     case TX_SCRIPTHASH:
         return 1; // doesn't include args needed by the script
     }
@@ -1391,6 +1422,9 @@ bool IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
     switch (whichType)
     {
     case TX_NONSTANDARD:
+    case TX_PUBKEYWITHHASH: // no support for hash pre-image storage in wallet yet, so we won't be able to sign it
+    case TX_PUBKEYHASHWITHHASH:
+    case TX_MULTISIGWITHHASH:
         return false;
     case TX_PUBKEY:
         keyID = CPubKey(vSolutions[0]).GetID();
@@ -1667,6 +1701,9 @@ static CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo,
     switch (txType)
     {
     case TX_NONSTANDARD:
+    case TX_PUBKEYWITHHASH: // No support yet for doing operations on these contract transactions
+    case TX_PUBKEYHASHWITHHASH:
+    case TX_MULTISIGWITHHASH:
         // Don't know anything about this, assume bigger one is correct:
         if (sigs1.size() >= sigs2.size())
             return PushAll(sigs1);
